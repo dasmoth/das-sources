@@ -1,0 +1,43 @@
+<?xml version="1.0"?>
+<project name="das-sources" default="all">
+  <target name="all" depends="package-java" />
+  
+  <property name="name" value="das-sources" />
+  <property name="version" value="0.1.0" />
+  <property name="build.compiler" value="modern" />
+  <property name="bin.dir" value="./bin" />
+  <property name="lib.dir" value="./lib" />
+  <property name="src.dir" value="./src" />
+
+  <path id="classpath">
+    <path location="${bin.dir}" />
+    <path location="${src.dir}" />
+    <fileset dir="${lib.dir}">
+      <include name="*.jar" />
+    </fileset>
+  </path>
+
+  <target name="compile-java" description="Compiles the java source code">
+    <mkdir dir="${bin.dir}" />
+    <apt
+      destdir="${bin.dir}"
+      deprecation="false"
+      debug="false"
+      srcdir="${src.dir}"
+      classpathref="classpath"
+    />
+  </target>
+  
+  <target name="package-java" depends="compile-java" description="create main class jar file">
+    <jar
+      jarfile="${name}.jar"
+    >
+      <fileset dir="${bin.dir}" />
+    </jar>
+  </target>
+
+  <!-- Cleans everything -->
+  <target name="clean"  description="Cleans everything">
+    <delete dir="${bin.dir}" includes="**/*"/>
+  </target>
+</project>
