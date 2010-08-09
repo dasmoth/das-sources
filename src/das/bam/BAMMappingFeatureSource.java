@@ -1,16 +1,12 @@
+/* -*- mode: java; c-basic-offset: 4; indent-tabs-mode: nil -*- */
+
 package das.bam;
 
 import java.io.File;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
-import java.util.Collection;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.NoSuchElementException;
-import java.util.Set;
-import java.util.TreeMap;
+import java.util.*;
 
 import javax.servlet.ServletContext;
 import javax.sql.DataSource;
@@ -34,49 +30,60 @@ import org.biojava.bio.symbol.DummySymbolList;
 import org.biojava.bio.symbol.Location;
 import org.biojava.bio.symbol.LocationTools;
 import org.biojava.bio.symbol.RangeLocation;
-import org.biojava.servlets.dazzle.datasource.AbstractDataSource;
-import org.biojava.servlets.dazzle.datasource.DataSourceException;
-import org.biojava.servlets.dazzle.datasource.TilingFeatureSource;
+import org.biojava.servlets.dazzle.datasource.*;
 import org.biojava.utils.JDBCPooledDataSource;
 import org.biojava.utils.SmallSet;
 
 import utils.Collects;
 
+/**
+ * DAS source backed by an (indexed) BAM file.
+ *
+ * @author Thomas Down
+ */
 public class BAMMappingFeatureSource extends AbstractDataSource implements TilingFeatureSource {
-	private String bamPath;
-	private String bamIndexPath;
-	private int minTile = 100;
-	private int defaultMaxBins = 500;
-	private int qualityThreshold = -1;
+    private String bamPath;
+    private String bamIndexPath;
+    private int minTile = 100;
+    private int defaultMaxBins = 500;
+    private int qualityThreshold = -1;
+    private boolean groupPairs = false;
+    
+    private SAMFileReader db;
 	
-	private SAMFileReader db;
+    public void setGroupPairs(boolean b) {
+	this.groupPairs = b;
+    }
+
+    public void setQualityThreshold(int i) {
+	this.qualityThreshold = i;
+    }
+    
+    public void setMinTile(int i) {
+	this.minTile = i;
+    }
 	
-	public void setQualityThreshold(int i) {
-		this.qualityThreshold = i;
-	}
+    public void setBamPath(String s) {
+	    this.bamPath = s;
+    }
 	
-	public void setMinTile(int i) {
-		this.minTile = i;
-	}
-	
-	public void setBamPath(String s) {
-		this.bamPath = s;
-	}
-	
-	public void setBamIndexPath(String s) {
-		this.bamIndexPath = s;
-	}
+    public void setBamIndexPath(String s) {
+	this.bamIndexPath = s;
+    }
 	
 
-	public void init(ServletContext context)
+    public void init(ServletContext context)
     	throws DataSourceException
     {
-		super.init(context);
+	super.init(context);
     	try {
-	    	db = new SAMFileReader(new File(bamPath), new File(bamIndexPath));
-	    	db.setValidationStringency(SAMFileReader.ValidationStringency.LENIENT);
+	    if (bamIndexPath == null) {
+		bamIndexPath = bamPath + ".bai";
+	    }
+	    db = new SAMFileReader(new File(bamPath), new File(bamIndexPath));
+	    db.setValidationStringency(SAMFileReader.ValidationStringency.LENIENT);
     	} catch (Exception ex) {
-    		throw new DataSourceException(ex);
+	    throw new DataSourceException(ex);
     	}
     }
 	
@@ -101,7 +108,7 @@ public class BAMMappingFeatureSource extends AbstractDataSource implements Tilin
 	}
 
 	public String getDataSourceVersion() {
-		return "0.0.2";
+		return "0.1.0";
 	}
 
 	public String getLandmarkVersion(String ref) throws DataSourceException, NoSuchElementException {
@@ -161,7 +168,7 @@ public class BAMMappingFeatureSource extends AbstractDataSource implements Tilin
 					int tileSize = Math.max(minTile, (loc.getMax() - loc.getMin() + 1) / maxbins);
 					int minTile = (int) Math.floor((1.0 * loc.getMin()) / tileSize);
 					int maxTile = (int) Math.ceil((1.0 * loc.getMax()) / tileSize);
-					int[] tileCounts = new int[maxTile - minTile + 1];
+					double[] tileCounts = new double[maxTile - minTile + 1];
 					
 					StrandedFeature.Template templ = new StrandedFeature.Template();
 					templ.source = "sam";
@@ -185,21 +192,41 @@ public class BAMMappingFeatureSource extends AbstractDataSource implements Tilin
 							templ.location = new RangeLocation(r.getAlignmentStart(), r.getAlignmentEnd());
 							templ.strand = r.getReadNegativeStrandFlag() ? StrandedFeature.NEGATIVE : StrandedFeature.POSITIVE;
 							// templ.annotation.setProperty("score", new Double(score));
+							if (groupPairs) {
+							    templ.annotation.setProperty("pair", r.getReadName());
+							}
 							Feature f = this.createFeature(templ);
 							if (ff.accept(f)) {
 								result.addFeature(f);
 							}
 							
-							int minReadTile = Math.max(minTile, templ.location.getMin() / tileSize);
-							int maxReadTile = Math.min(maxTile, templ.location.getMax() / tileSize);
-							
-							for (int t = minReadTile; t <= maxReadTile; ++t) {
+							if (!r.getReadPairedFlag() || (r.getFirstOfPairFlag() && r.getProperPairFlag())) {
+							    int minPos = templ.location.getMin();
+							    int maxPos = templ.location.getMax();
+							    if (r.getReadPairedFlag()) {
+								int as = r.getAlignmentStart();
+								int ae = r.getAlignmentEnd();
+								int ms = r.getMateAlignmentStart();
+								if (as < ms) {
+								    minPos = as;
+								    maxPos = ms + (ae - as);
+								} else {
+								    minPos = ms;
+								    maxPos = ae;
+								}
+							    }
+
+							    int minReadTile = Math.max(minTile, minPos / tileSize);
+							    int maxReadTile = Math.min(maxTile, maxPos / tileSize);
+							    
+							    for (int t = minReadTile; t <= maxReadTile; ++t) {
 								int tileStart = (t) * tileSize + 1;
 								int tileEnd = (t + 1) * tileSize;
-								int lapStart = Math.max(tileStart, templ.location.getMin());
-								int lapEnd = Math.min(tileEnd, templ.location.getMax());
+								int lapStart = Math.max(tileStart, minPos);
+								int lapEnd = Math.min(tileEnd, maxPos);
 								
-								tileCounts[t - minTile] += (lapEnd - lapStart + 1);
+								tileCounts[t - minTile] += ((1.0 * (lapEnd - lapStart + 1)) / (maxPos - minPos + 1));
+							    }
 							}
 						}
 					} finally {
@@ -209,9 +236,10 @@ public class BAMMappingFeatureSource extends AbstractDataSource implements Tilin
 					templ.source = "sam";
 					templ.type = "density";
 					templ.strand = StrandedFeature.UNKNOWN;
+					templ.annotation = new SmallAnnotation();
 					for (int t = 0; t < tileCounts.length; ++t) {
 						templ.location = new RangeLocation((minTile + t) * tileSize + 1, (minTile + t + 1) * tileSize);
-						templ.annotation.setProperty("score", new Double((1.0 * tileCounts[t]) / tileSize));
+						templ.annotation.setProperty("score", new Double((1000.0 * tileCounts[t]) / tileSize));
 						Feature f = this.createFeature(templ);
 						if (ff.accept(f)) {
 							result.addFeature(f);
@@ -237,6 +265,16 @@ public class BAMMappingFeatureSource extends AbstractDataSource implements Tilin
 			return filter(FeatureFilter.all).countFeatures();
 		}
 	}
+
+    public List getGroups(Feature f) {
+	Annotation a = f.getAnnotation();
+	if (a.containsProperty("pair")) {
+	    return Collections.singletonList(new DASGFFGroup(a.getProperty("pair").toString(), "pair"));
+	} else {
+	    return Collections.emptyList();
+	}
+    }
+
 	
     public static Location extractShadowOverlappingLocation(FeatureFilter ff) {
     	if (ff instanceof FeatureFilter.OverlapsLocation) {
