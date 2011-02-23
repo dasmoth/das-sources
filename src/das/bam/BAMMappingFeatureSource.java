@@ -11,8 +11,7 @@ import java.util.*;
 import javax.servlet.ServletContext;
 import javax.sql.DataSource;
 
-import net.sf.samtools.SAMFileReader;
-import net.sf.samtools.SAMRecord;
+import net.sf.samtools.*;
 import net.sf.samtools.util.CloseableIterator;
 
 import org.biojava.bio.Annotation;
@@ -48,7 +47,8 @@ public class BAMMappingFeatureSource extends AbstractDataSource implements Tilin
     private int defaultMaxBins = 500;
     private int qualityThreshold = -1;
     private boolean groupPairs = false;
-    
+    private Set<String> seqNames;
+
     private SAMFileReader db;
 	
     public void setGroupPairs(boolean b) {
@@ -82,6 +82,11 @@ public class BAMMappingFeatureSource extends AbstractDataSource implements Tilin
 	    }
 	    db = new SAMFileReader(new File(bamPath), new File(bamIndexPath));
 	    db.setValidationStringency(SAMFileReader.ValidationStringency.LENIENT);
+
+            seqNames = new HashSet<String>();
+            for (SAMSequenceRecord ssr : db.getFileHeader().getSequenceDictionary().getSequences()) {
+                seqNames.add(ssr.getSequenceName());
+            }
     	} catch (Exception ex) {
 	    throw new DataSourceException(ex);
     	}
@@ -89,11 +94,11 @@ public class BAMMappingFeatureSource extends AbstractDataSource implements Tilin
 	
 	@Override
 	public Sequence getSequence(String ref) throws DataSourceException, NoSuchElementException {
-		return new Seq(ref);
+		return makeSeq(ref);
 	}
 	
 	public FeatureHolder getFeatures(String ref, int maxbins) {
-		return new Seq(ref, maxbins);
+		return makeSeq(ref, maxbins);
 	}
 
 	public Set getAllTypes() {
@@ -137,22 +142,36 @@ public class BAMMappingFeatureSource extends AbstractDataSource implements Tilin
 		return tot / l.size();
 	}
 	
+    private Seq makeSeq(String name, int maxbins) {
+        if (!seqNames.contains(name)) {
+            if (name.startsWith("chr")) {
+                name = name.substring(3);
+            } else {
+                name = "chr" + name;
+            }
+        }
+        if (!seqNames.contains(name)) {
+            throw new RuntimeException("No sequence " + name);
+        }
+        return new Seq(name, maxbins);
+    }
+    
+    private Seq makeSeq(String name) {
+        return new Seq(name, -1);
+    }
+
 	private class Seq extends SimpleSequence {
 		private int maxbins = -1;
 		
-		public Seq(String name) {
+            public Seq(String name, int maxbins) {
 			super(
 					new DummySymbolList(DNATools.getDNA(), Integer.MAX_VALUE), 
 					name, 
 					name, 
 					Annotation.EMPTY_ANNOTATION
 			);
-		}
-		
-		public Seq(String name, int maxbins) {
-			this(name);
-			this.maxbins = maxbins;
-		}
+                        this.maxbins = maxbins;
+            }
 		
 		public FeatureHolder filter(FeatureFilter ff) {
 			try {
